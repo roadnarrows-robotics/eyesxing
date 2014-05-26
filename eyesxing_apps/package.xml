@@ -1,0 +1,19 @@
+<package>
+  <name>eyesxing_apps</name>
+  <version>1.0.0</version>
+  <description>
+    This package defines image and video stand-alone Eyes Xing applications,
+    independent of ROS.
+    TODO: find a way to install in traditional bin, not lib
+  </description>
+
+  <license>MIT</license>
+  <url>http://github.com/roadnarrows-robotics/eyesxing/eyesxing_msgs</url>
+  <author email="robin.knight@roadnarrows.com">Robin Knight</author>
+  <maintainer email="robin.knight@roadnarrows.com">Robin Knight</maintainer>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <build_depend>roscpp</build_depend>
+  <run_depend>roscpp</run_depend>
+</package>

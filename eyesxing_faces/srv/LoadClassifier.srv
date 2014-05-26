@@ -1,0 +1,7 @@
+# Eyes Xing eyesxing_faces/LoadClassifier service
+#
+# Specifies classifier to load.
+#
+eyesxing_msgs/Classifier classifier   # classifier
+---
+int8  rc

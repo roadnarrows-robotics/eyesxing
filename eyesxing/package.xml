@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<package>
+  <name>eyesxing</name>
+  <version>1.0.0</version>
+
+  <description>
+    The Eyes Xing Vision ROS metapackage - provides video and image  
+    processing libraries and ROS nodes.
+  </description>
+
+  <author email="robin.knight@roadnarrows.com">Robin Knight</author>
+  <maintainer email="robin.knight@roadnarrows.com">Robin Knight</maintainer>
+  <license>MIT</license>
+
+  <url type="website">http://github.com/roadnarrows-robotics/eyesxing</url>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <run_depend>eyesxing_msgs</run_depend>
+  <run_depend>eyesxing_apps</run_depend>
+  <run_depend>eyesxing_faces</run_depend>
+
+  <export>
+    <metapackage/>
+  </export>
+
+</package>
