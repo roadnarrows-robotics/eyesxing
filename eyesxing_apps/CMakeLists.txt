@@ -3,7 +3,7 @@ project(eyesxing_apps)
 
 find_package(catkin REQUIRED roscpp)
 
-set(rnr_DIR /prj/lib/rnr)
+set(rnr_DIR /usr/local/lib/cmake/rnr)
 find_package(rnr)
 
 catkin_package(

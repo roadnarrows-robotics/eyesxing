@@ -1,21 +1,20 @@
 ////////////////////////////////////////////////////////////////////////////////
 //
-// Package:   RoadNarrows Robotics ROS Pan-Tilt Robot Package
+// Package:   RoadNarrows Robotics Eyes Xing Faces ROS Package
 //
-// Link:      https://github.com/roadnarrows-robotics/pan_tilt
+// Link:      https://github.com/roadnarrows-robotics/eyesxing
 //
-// ROS Node:  pan_tilt_control
+// ROS Node:  faces_detector
 //
-// File:      pan_tilt_control.h
+// File:      faces_detector.h
 //
 /*! \file
  *
  * $LastChangedDate$
  * $Rev$
  *
- * \brief The ROS pan_tilt_control node class interface.
+ * \brief The ROS faces_detector node class interface.
  *
- * \author Danial Packard (daniel@roadnarrows.com)
  * \author Robin Knight (robin.knight@roadnarrows.com)
  *
  * \par Copyright:
@@ -25,97 +24,132 @@
  */
 /*
  * @EulaBegin@
- * 
- * Permission is hereby granted, without written agreement and without
- * license or royalty fees, to use, copy, modify, and distribute this
- * software and its documentation for any purpose, provided that
- * (1) The above copyright notice and the following two paragraphs
- * appear in all copies of the source code and (2) redistributions
- * including binaries reproduces these notices in the supporting
- * documentation.   Substantial modifications to this software may be
- * copyrighted by their authors and need not follow the licensing terms
- * described here, provided that the new terms are clearly indicated in
- * all files where they apply.
- * 
- * IN NO EVENT SHALL THE AUTHOR, ROADNARROWS LLC, OR ANY MEMBERS/EMPLOYEES
- * OF ROADNARROW LLC OR DISTRIBUTORS OF THIS SOFTWARE BE LIABLE TO ANY
- * PARTY FOR DIRECT, INDIRECT, SPECIAL, INCIDENTAL, OR CONSEQUENTIAL
- * DAMAGES ARISING OUT OF THE USE OF THIS SOFTWARE AND ITS DOCUMENTATION,
- * EVEN IF THE AUTHORS OR ANY OF THE ABOVE PARTIES HAVE BEEN ADVISED OF
- * THE POSSIBILITY OF SUCH DAMAGE.
- * 
- * THE AUTHOR AND ROADNARROWS LLC SPECIFICALLY DISCLAIM ANY WARRANTIES,
- * INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
- * FITNESS FOR A PARTICULAR PURPOSE. THE SOFTWARE PROVIDED HEREUNDER IS ON AN
- * "AS IS" BASIS, AND THE AUTHORS AND DISTRIBUTORS HAVE NO OBLIGATION TO
- * PROVIDE MAINTENANCE, SUPPORT, UPDATES, ENHANCEMENTS, OR MODIFICATIONS.
- * 
  * @EulaEnd@
  */
 ////////////////////////////////////////////////////////////////////////////////
 
-#ifndef _PAN_TILT_CONTROL_H
-#define _PAN_TILT_CONTROL_H
+#ifndef _FACES_DETECTOR_H
+#define _FACES_DETECTOR_H
+
+#include <sys/types.h>
 
 #include <string>
 #include <map>
+#include <vector>
+
+//
+// ROS
+//
+#include <ros/ros.h>
+#include <image_transport/image_transport.h>
+#include <cv_bridge/cv_bridge.h>
 
 //
 // Includes for boost libraries
 //
 #include <boost/bind.hpp>
+#include <boost/thread.hpp>
 
 //
-// ROS
+// OpenCV
 //
-#include "ros/ros.h"
-#include "actionlib/server/simple_action_server.h"
+#include <opencv2/opencv.hpp>
 
 //
-// ROS generated core, industrial, and pan-tilt messages.
+// ROS generated core and eyesxing messages.
 //
-#include "trajectory_msgs/JointTrajectory.h"
-#include "sensor_msgs/JointState.h"
-#include "industrial_msgs/RobotStatus.h"
-#include "pan_tilt_control/JointStateExtended.h"
-#include "pan_tilt_control/RobotStatusExtended.h"
+#include "eyesxing_msgs/Classifier.h"
+#include "eyesxing_msgs/OOI.h"
 
 //
-// ROS generatated pan-tilt services.
+// ROS generatated eyesxing services.
 //
-#include "pan_tilt_control/ClearAlarms.h"
-#include "pan_tilt_control/EStop.h"
-#include "pan_tilt_control/Freeze.h"
-#include "pan_tilt_control/GetProductInfo.h"
-#include "pan_tilt_control/GotoZeroPt.h"
-#include "pan_tilt_control/IsAlarmed.h"
-#include "pan_tilt_control/IsCalibrated.h"
-#include "pan_tilt_control/Pan.h"
-#include "pan_tilt_control/Release.h"
-#include "pan_tilt_control/ResetEStop.h"
-#include "pan_tilt_control/SetRobotMode.h"
-#include "pan_tilt_control/Stop.h"
-#include "pan_tilt_control/Sweep.h"
+#include "eyesxing_faces/LoadClassifier.h"
+#include "eyesxing_faces/ClearClassifiers.h"
 
 //
 // ROS generated action servers.
 //
-#include "pan_tilt_control/CalibrateAction.h"
 
 //
-// RoadNarrows embedded pan-tilt library.
+// RoadNarrows embedded libraries.
 //
-#include "pan_tilt/pan_tilt.h"
-#include "pan_tilt/ptRobot.h"
+#include "eyesxing/eyesxing.h"
+#include "eyesxing/eyeOOI.h"
+#include "eyesxing/eyeClassifier.h"
 
-//
-// Node headers.
-//
-#include "pan_tilt_control.h"
-
-
-namespace pan_tilt
+namespace eyesxing
 {
+  //----------------------------------------------------------------------------
+  // DetectorPElem Class
+  //----------------------------------------------------------------------------
+  /*!
+   * \brief Detector pipeline element class.
+   */
+  class DetectorPElem : public EyeClassifier
+  {
+  public:
+    /*!
+     * \brief Default initialization constructor.
+     *
+     * \parm strName        Object/class tag for this classifier.
+     *                      For example: 'face_profiles'.
+     * \param op            Set operation with any upstream set of OoIs.
+     */
+    DetectorPElem(const std::string strName=UNKNOWN_OOI, SetOp op=SetOpUnion) :
+        EyeClassifier(strName), m_eSetOp(op)
+    {
+    }
+
+    /*!
+     * \brief Shallow copy constructor.
+     *
+     * \note Any loaded classifier is not copied.
+     */
+    DetectorPElem(const DetectorPElem &src) :
+        EyeClassifier(src.m_strName), m_eSetOp(src.m_eSetOp)
+    {
+    }
+
+    /*!
+     * \brief Destructor.
+     */
+    virtual ~DetectorPElem()
+    {
+    }
+
+    /*!
+     * \brief Perfrom the given set operation.
+     *
+     * C = A op B.
+     *
+     * An OoI in A is considered to be the same object in B by the degree of
+     * their overlapping bounding boxes.
+     *
+     * \param [in] a      Set A of OoIs.
+     * \param [in] b      Set B of OoIs.
+     * \param [out] c     Resultant set C of OoIs.
+     * \param similarity  Simuiarity qualitatve metric 0.0 - 1.0.
+     *
+     * \return Returns the number of objects in C.
+     */
+    virtual size_t setop(const std::vector<EyeOOI> &a,
+                         const std::vector<EyeOOI> &b,
+                         std::vector<EyeOOI>       &c,
+                         double                    similarity=0.9)
+    {
+      return EyeClassifier::setop(m_eSetOp, a, b, c, similarity);
+    }
+
+  protected:
+    SetOp m_eSetOp;   ///< set operation bound to this detector pipeline element
+  };
+
+
+  //----------------------------------------------------------------------------
+  // EyesXingFacesDetector Class
+  //----------------------------------------------------------------------------
+
   /*!
    * \brief The class embodiment of the pan_tilt_control ROS node.
    */
@@ -131,41 +165,21 @@ namespace pan_tilt
     /*! map of ROS subscriptions type */
     typedef std::map<std::string, ros::Subscriber> MapSubscriptions;
 
+    /*! pipeline of dectectors type */
+    typedef std::vector<DetectorPElem> DetectorPipeline;
+
     /*!
      * \brief Default initialization constructor.
      *
      * \param nh  Bound node handle.
+     * \param hz  Application nominal loop rate in Hertz.
      */
-    EyesXingFacesDetector(ros::NodeHandle &nh);
+    EyesXingFacesDetector(ros::NodeHandle &nh, double hz);
 
     /*!
      * \brief Destructor.
      */
     virtual ~EyesXingFacesDetector();
-
-    /*!
-     * \brief Connect to the pan-tilt.
-     *
-     * \param strDev    Serial USB device name.
-     * \param nBaudRate Serial baud rate.
-     *
-     * \copydoc doc_return_std
-     */
-    virtual int connect(const std::string &strDev="/dev/ttyUSB0",
-                        const int          nBaudRate=1000000)
-    {
-      return m_robot.connect(strDev, nBaudRate);
-    }
-
-    /*!
-     * \brief Disconnect from the pan-tilt.
-     *
-     * \copydoc doc_return_std
-     */
-    virtual int disconnect()
-    {
-      return m_robot.disconnect();
-    }
 
     /*!
      * \brief Advertise all services.
@@ -204,217 +218,78 @@ namespace pan_tilt
     }
 
     /*!
-     * \brief Get bound embedded robot instance.
+     * \brief Update Objects of Interest message from current detector state.
      *
-     * \return Robot instance.
+     * \param [out] msg   Objects of Interest message.
      */
-    PanTiltRobot &getRobot()
+    void updateOOIMsg(eyesxing_msgs::OOI &msg);
+
+    /*!
+     * \brief Convert seconds to loop counts.
+     *
+     * \param seconds Seconds.
+     *
+     * \return Count.
+     */
+    int countsPerSecond(double seconds)
     {
-      return m_robot;
+      return (int)(seconds * m_hz);
     }
 
     /*!
-     * \brief Update joint state message from current robot joint state.
+     * \brief View overlay of objects detected onto processed image frame.
      *
-     * \param [in] state  Robot joint state.
-     * \param [out] msg   Joint state message.
-     */
-    void updateJointStateMsg(PanTiltJointStatePoint &state,
-                             sensor_msgs::JointState &msg);
-
-    /*!
-     * \brief Update extended joint state message from current robot joint
-     * state.
+     * Usefull debugging call.
      *
-     * \param [in] state  Robot joint state.
-     * \param [out] msg   Extended joint state message.
+     * \param bDoWait Do [not] call OpenCV waitKey() to force window update.
+     *                The waitKey() forces update of the window and is required
+     *                somewhere in the processing loop or windowing thread.
      */
-    void updateExtendedJointStateMsg(PanTiltJointStatePoint &state,
-                                     pan_tilt_control::JointStateExtended &msg);
-
-    /*!
-     * \brief Update robot status message from current robot status.
-     *
-     * \param [in] status Robot status.
-     * \param [out] msg   Robot status message.
-     */
-    void updateRobotStatusMsg(PanTiltRobotStatus &status,
-                              industrial_msgs::RobotStatus &msg);
-
-    /*!
-     * \brief Update extended robot status message from current robot status.
-     *
-     * \param [in] status Robot status.
-     * \param [out] msg   Extended roobt status message.
-     */
-    void updateExtendedRobotStatusMsg(PanTiltRobotStatus &status,
-                                   pan_tilt_control::RobotStatusExtended &msg);
+    void view(bool bDoWait=true);
 
   protected:
-    ros::NodeHandle  &m_nh;       ///< the node handler bound to this instance
-    PanTiltRobot     m_robot;     ///< real-time, pan-tilt robot mechanism
+    ros::NodeHandle            &m_nh;       ///< bound node handler instance
+    double                      m_hz;       ///< application nominal loop rate
+    boost::mutex                m_mutexImg; ///< image grab mutex
+    cv::Mat                     m_imgLast;  ///< last image grabbed
+    sensor_msgs::ImageConstPtr  m_msgImg;   ///< last image message
+    DetectorPipeline            m_pipeline; ///< pipeline of detectors
+    std::vector<EyeOOI>         m_oois;     ///< detected objects of interest
 
     // ROS services, publishers, subscriptions.
     MapServices       m_services;       ///< pan-tilt control services
     MapPublishers     m_publishers;     ///< pan-tilt control publishers
     MapSubscriptions  m_subscriptions;  ///< pan-tilt control subscriptions
+    image_transport::Subscriber m_subImage; ///< image subscriber
 
     // Messages for published data.
-    sensor_msgs::JointState               m_msgJointState;
-                                              ///< joint state message
-    pan_tilt_control::JointStateExtended  m_msgJointStateEx;
-                                              ///< extended joint state message
-    industrial_msgs::RobotStatus          m_msgRobotStatus;
-                                              ///< robot status message
-    pan_tilt_control::RobotStatusExtended m_msgRobotStatusEx;
-                                              ///< extended robot status message
+    eyesxing_msgs::OOI    m_msgOOI;     ///< objects of interest message
 
     //..........................................................................
     // Service callbacks
     //..........................................................................
 
     /*!
-     * \brief Clear robot alarms service callback.
+     * \brief Clear object classifiers.
      *
      * \param req   Service request.
      * \param rsp   Service response.
      *
      * \return Returns true on success, false on failure.
      */
-    bool clearAlarms(pan_tilt_control::ClearAlarms::Request  &req,
-                     pan_tilt_control::ClearAlarms::Response &rsp);
+    bool clearClassifiers(eyesxing_faces::ClearClassifiers::Request  &req,
+                          eyesxing_faces::ClearClassifiers::Response &rsp);
 
     /*!
-     * \brief Emergency stop robot service callback.
+     * \brief Load object classifier.
      *
      * \param req   Service request.
      * \param rsp   Service response.
      *
      * \return Returns true on success, false on failure.
      */
-    bool estop(pan_tilt_control::EStop::Request  &req,
-               pan_tilt_control::EStop::Response &rsp);
-
-    /*!
-     * \brief Freeze (stop) robot service callback.
-     *
-     * \param req   Service request.
-     * \param rsp   Service response.
-     *
-     * \return Returns true on success, false on failure.
-     */
-    bool freeze(pan_tilt_control::Freeze::Request  &req,
-                pan_tilt_control::Freeze::Response &rsp);
-
-    /*!
-     * \brief Get robot product information service callback.
-     *
-     * \param req   Service request.
-     * \param rsp   Service response.
-     *
-     * \return Returns true on success, false on failure.
-     */
-    bool getProductInfo(pan_tilt_control::GetProductInfo::Request  &req,
-                        pan_tilt_control::GetProductInfo::Response &rsp);
-
-    /*!
-     * \brief Go to robot's zero point (home) position service callback.
-     *
-     * \param req   Service request.
-     * \param rsp   Service response.
-     *
-     * \return Returns true on success, false on failure.
-     */
-    bool gotoZeroPt(pan_tilt_control::GotoZeroPt::Request  &req,
-                    pan_tilt_control::GotoZeroPt::Response &rsp);
-
-    /*!
-     * \brief Test if robot is alarmed service callback.
-     *
-     * \param req   Service request.
-     * \param rsp   Service response.
-     *
-     * \return Returns true on success, false on failure.
-     */
-    bool isAlarmed(pan_tilt_control::IsAlarmed::Request  &req,
-                   pan_tilt_control::IsAlarmed::Response &rsp);
-
-    /*!
-     * \brief Test if robot is calibrated service callback.
-     *
-     * \param req   Service request.
-     * \param rsp   Service response.
-     *
-     * \return Returns true on success, false on failure.
-     */
-    bool isCalibrated(pan_tilt_control::IsCalibrated::Request  &req,
-                      pan_tilt_control::IsCalibrated::Response &rsp);
-
-    /*!
-     * \brief Continuously pan service callback.
-     *
-     * \param req   Service request.
-     * \param rsp   Service response.
-     *
-     * \return Returns true on success, false on failure.
-     */
-    bool pan(pan_tilt_control::Pan::Request  &req,
-             pan_tilt_control::Pan::Response &rsp);
-
-    /*!
-     * \brief Release drive power to robot motors service callback.
-     *
-     * \param req   Service request.
-     * \param rsp   Service response.
-     *
-     * \return Returns true on success, false on failure.
-     */
-    bool release(pan_tilt_control::Release::Request  &req,
-                 pan_tilt_control::Release::Response &rsp);
-
-    /*!
-     * \brief Release robot's emergency stop condition service callback.
-     *
-     * \param req   Service request.
-     * \param rsp   Service response.
-     *
-     * \return Returns true on success, false on failure.
-     */
-    bool resetEStop(pan_tilt_control::ResetEStop::Request  &req,
-                    pan_tilt_control::ResetEStop::Response &rsp);
-
-    /*!
-     * \brief Set robot's manual/auto mode service callback.
-     *
-     * \param req   Service request.
-     * \param rsp   Service response.
-     *
-     * \return Returns true on success, false on failure.
-     */
-    bool setRobotMode(pan_tilt_control::SetRobotMode::Request  &req,
-                      pan_tilt_control::SetRobotMode::Response &rsp);
-
-    /*!
-     * \brief Stop (freeze) robot service callback.
-     *
-     * \param req   Service request.
-     * \param rsp   Service response.
-     *
-     * \return Returns true on success, false on failure.
-     */
-    bool stop(pan_tilt_control::Stop::Request  &req,
-              pan_tilt_control::Stop::Response &rsp);
-
-    /*!
-     * \brief Continuously sweep service callback.
-     *
-     * \param req   Service request.
-     * \param rsp   Service response.
-     *
-     * \return Returns true on success, false on failure.
-     */
-    bool sweep(pan_tilt_control::Sweep::Request  &req,
-               pan_tilt_control::Sweep::Response &rsp);
+    bool loadClassifier(eyesxing_faces::LoadClassifier::Request  &req,
+                        eyesxing_faces::LoadClassifier::Response &rsp);
 
 
     //..........................................................................
@@ -422,14 +297,9 @@ namespace pan_tilt
     //..........................................................................
 
     /*!
-     * \brief Publish joint state and extended joint state topics.
+     * \brief Publish objects of interest topic.
      */
-    void publishJointState();
-
-    /*!
-     * \brief Publish robot status and extended robot status topics.
-     */
-    void publishRobotStatus();
+    void publishOOI();
 
 
     //..........................................................................
@@ -441,10 +311,11 @@ namespace pan_tilt
      *
      * \param jt  Joint trajectory message.
      */
-    void execJointCmd(const trajectory_msgs::JointTrajectory &jt);
+    void imageCb(const sensor_msgs::ImageConstPtr& msg);
+    
   };
 
-} // namespace pan_tilt
+} // namespace eyesxing
 
 
-#endif // _PAN_TILT_CONTROL_H
+#endif // _FACES_DETECTOR_H

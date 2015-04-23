@@ -1,21 +1,20 @@
 ////////////////////////////////////////////////////////////////////////////////
 //
-// Package:   RoadNarrows Robotics ROS Pan-Tilt Robot Package
+// Package:   RoadNarrows Robotics Eyes Xing Faces ROS Package
 //
-// Link:      https://github.com/roadnarrows-robotics/pan_tilt
+// Link:      https://github.com/roadnarrows-robotics/eyesxing
 //
-// ROS Node:  pan_tilt_control
+// ROS Node:  faces_detector
 //
-// File:      pan_tilt_control_main.cpp
+// File:      faces_detector_main.cpp
 //
 /*! \file
  *
  * $LastChangedDate$
  * $Rev$
  *
- * \brief The ROS pan_tilt_control main.
+ * \brief The ROS faces_detector main.
  *
- * \author Danial Packard (daniel@roadnarrows.com)
  * \author Robin Knight (robin.knight@roadnarrows.com)
  *
  * \par Copyright:
@@ -25,31 +24,6 @@
  */
 /*
  * @EulaBegin@
- * 
- * Permission is hereby granted, without written agreement and without
- * license or royalty fees, to use, copy, modify, and distribute this
- * software and its documentation for any purpose, provided that
- * (1) The above copyright notice and the following two paragraphs
- * appear in all copies of the source code and (2) redistributions
- * including binaries reproduces these notices in the supporting
- * documentation.   Substantial modifications to this software may be
- * copyrighted by their authors and need not follow the licensing terms
- * described here, provided that the new terms are clearly indicated in
- * all files where they apply.
- * 
- * IN NO EVENT SHALL THE AUTHOR, ROADNARROWS LLC, OR ANY MEMBERS/EMPLOYEES
- * OF ROADNARROW LLC OR DISTRIBUTORS OF THIS SOFTWARE BE LIABLE TO ANY
- * PARTY FOR DIRECT, INDIRECT, SPECIAL, INCIDENTAL, OR CONSEQUENTIAL
- * DAMAGES ARISING OUT OF THE USE OF THIS SOFTWARE AND ITS DOCUMENTATION,
- * EVEN IF THE AUTHORS OR ANY OF THE ABOVE PARTIES HAVE BEEN ADVISED OF
- * THE POSSIBILITY OF SUCH DAMAGE.
- * 
- * THE AUTHOR AND ROADNARROWS LLC SPECIFICALLY DISCLAIM ANY WARRANTIES,
- * INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
- * FITNESS FOR A PARTICULAR PURPOSE. THE SOFTWARE PROVIDED HEREUNDER IS ON AN
- * "AS IS" BASIS, AND THE AUTHORS AND DISTRIBUTORS HAVE NO OBLIGATION TO
- * PROVIDE MAINTENANCE, SUPPORT, UPDATES, ENHANCEMENTS, OR MODIFICATIONS.
- * 
  * @EulaEnd@
  */
 ////////////////////////////////////////////////////////////////////////////////
@@ -78,11 +52,11 @@
 //
 // Node headers.
 //
-#include "pan_tilt_control.h"
-#include "pan_tilt_as_calib.h"
+#include "faces_detector.h"
 
 using namespace ::std;
-using namespace pan_tilt;
+using namespace eyesxing;
+
 
 //. . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 
 // Node Specific Defines and Data
@@ -98,7 +72,7 @@ using namespace pan_tilt;
 //
 // Data
 //
-const char *NodeName = "pan_tilt_control";  ///< this ROS node's name
+const char *NodeName = "faces_detector";  ///< this ROS node's name
 
 
 //. . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 
@@ -108,8 +82,7 @@ const char *NodeName = "pan_tilt_control";  ///< this ROS node's name
 //
 // Options
 //
-static char  *OptsDevice    = (char *)"/dev/ttyUSB0";   ///< device name
-static int    OptsBaudRate  = 1000000;                  ///< baud rate
+static bool_t OptsView    = false;    ///< debug view detected objects/frame
 
 /*!
  * \brief The package information.
@@ -121,10 +94,10 @@ static const PkgInfo_T PkgInfo =
 {
   NodeName,                       ///< package name
   "1.0.0",                        ///< package version
-  "2014.02.22",                   ///< date (and time)
+  "2014.05.29",                   ///< date (and time)
   "2014",                         ///< year
   NodeName,                       ///< package full name
-  "Robin Knight, Daniel Packard", ///< authors
+  "Robin Knight",                 ///< authors
   "RoadNarrows LLC",              ///< owner
   "(C) 2014 RoadNarrows LLC"      ///< disclaimer
 };
@@ -153,95 +126,27 @@ static OptsPgmInfo_T AppPgmInfo =
  */
 static OptsInfo_T AppOptsInfo[] =
 {
-  // --device, d
+  // --view, -v
   {
-    "device",             // long_opt
-    'd',                  // short_opt
-    required_argument,    // has_arg
+    "view",               // long_opt
+    'v',                  // short_opt
+    no_argument,          // has_arg
     true,                 // has_default
-    &OptsDevice,          // opt_addr
-    OptsCvtArgStr,        // fn_cvt
-    OptsFmtStr,           // fn_fmt
-    "<name>",             // arg_name
-    "Pan-tilt serial USB device name."
+    &OptsView,            // opt_addr
+    OptsCvtArgBool,       // fn_cvt
+    OptsFmtBool,          // fn_fmt
+    NULL,                 // arg_name
                           // opt desc
+    "View overlay of detected objects onto captured frames in window."
   },
 
-  // --baudrate, b
-  {
-    "baudrate",           // long_opt
-    'b',                  // short_opt
-    required_argument,    // has_arg
-    true,                 // has_default
-    &OptsBaudRate,        // opt_addr
-    OptsCvtArgInt,        // fn_cvt
-    OptsFmtInt,           // fn_fmt
-    "<rate>",             // arg_name
-    "Pan-tilt serial baud rate."
-                          // opt desc
-  },
 
   {NULL, }
 };
 
-/*!
- * \brief Get real device name.
- *
- * If the given device name is a symbolic link, the the real device pointed to
- * by the symbolic link is returned. Others the given device name is returned.
- *
- * \param strDevName  Give device name.
- *
- * \return String.
- */
-static string getDeviceName(const string &strDevName)
-{
-  char    buf[MAX_PATH+1];
-  ssize_t len;
-
-  //
-  // Symbolic link.
-  //
-  if( (len = readlink(strDevName.c_str(), buf, MAX_PATH)) > 0 )
-  {
-    buf[len] = 0;
-
-    // absollute path
-    if( buf[0] == '/' )
-    {
-      string strRealDevName(buf);
-      return strRealDevName;
-    }
-
-    // relative path
-    else
-    {
-      char          s[strDevName.size()+1];
-      stringstream  ss;
-
-      strcpy(s, strDevName.c_str());
-
-      char *sDirName = dirname(s);
-
-      ss << sDirName << "/" << buf;
-
-      return ss.str();
-    }
-
-  }
-
-  //
-  // Real device.
-  //
-  else
-  {
-    return strDevName;
-  }
-}
-
 
 /*!
- *  \brief ROS pan-tilt control node main.
+ *  \brief ROS faces_detector node main.
  *
  * \param argc    Command-line argument count.
  * \param argv    Command-line argument list.
@@ -252,6 +157,7 @@ int main(int argc, char *argv[])
 {
   string  strNodeName;  // ROS-given node name
   string  strDevName;   // real device name
+  double  hz = 30.0;    // ros loop hertz rate
   int     rc;           // return code
 
   // 
@@ -291,50 +197,35 @@ int main(int argc, char *argv[])
   //
   // Create a pan-tilt node object.
   //
-  PanTiltControl  pantilt(nh);
-
-  // Get real device name (i.e. follow any symbolic link).
-  strDevName = getDeviceName(OptsDevice);
-
-  //
-  // Connect to the pan-tilt mechanism.
-  //
-  if( (rc = pantilt.connect(strDevName, OptsBaudRate)) != PT_OK )
-  {
-    ROS_ERROR_STREAM(strNodeName << ": Failed to connect to pan-tilt.");
-    return APP_EC_INIT;
-  }
+  EyesXingFacesDetector  detector(nh, hz);
 
   //
   // Advertise services.
   //
-  pantilt.advertiseServices();
+  detector.advertiseServices();
 
   ROS_INFO("%s: Services registered.", strNodeName.c_str());
 
   //
   // Advertise publishers.
   //
-  pantilt.advertisePublishers();
+  detector.advertisePublishers();
   
   ROS_INFO("%s: Publishers registered.", strNodeName.c_str());
   
   //
   // Subscribed to topics.
   //
-  pantilt.subscribeToTopics();
+  detector.subscribeToTopics();
   
   ROS_INFO("%s: Subscribed topics registered.", strNodeName.c_str());
 
   //
   // Create Action Servers
   //
-  ASCalibrate asCalib("calibrate_as", pantilt);
-
-  ROS_INFO("%s: Action servers created.", strNodeName.c_str());
 
   // set loop rate in Hertz
-  ros::Rate loop_rate(10);
+  ros::Rate loop_rate(hz);
 
   ROS_INFO("%s: Ready.", strNodeName.c_str());
 
@@ -347,7 +238,13 @@ int main(int argc, char *argv[])
     ros::spinOnce(); 
 
     // publish all advertized topics
-    pantilt.publish();
+    detector.publish();
+
+    // view detected objects
+    if( OptsView )
+    {
+      detector.view();
+    }
 
     // sleep to keep at loop rate
     loop_rate.sleep();

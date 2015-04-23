@@ -39,9 +39,19 @@
 //
 // ROS
 //
-#include "ros/ros.h"
-#include "actionlib/server/simple_action_server.h"
+#include <ros/ros.h>
+#include <image_transport/image_transport.h>
+#include <cv_bridge/cv_bridge.h>
 
+//
+// Includes for boost libraries
+//
+#include <boost/bind.hpp>
+
+//
+// OpenCV
+//
+#include <opencv2/opencv.hpp>
 
 //
 // ROS generated core and eyesxing messages.
@@ -62,55 +72,65 @@
 //
 // RoadNarrows embedded libraries.
 //
+#include "eyesxing/eyesxing.h"
+#include "eyesxing/eyeOOI.h"
+#include "eyesxing/eyeClassifier.h"
 
 //
 // Node headers.
 //
-#include "eyesxing_detector.h"
+#include "faces_detector.h"
 
 
 using namespace std;
 using namespace eyesxing;
-using namespace eyesxing_detector;
+using namespace eyesxing_faces;
 
 
 //------------------------------------------------------------------------------
 // EyesXingFacesDetector Class
 //------------------------------------------------------------------------------
 
-hz
-EyesXingFacesDetector::EyesXingFacesDetector(ros::NodeHandle &nh) : m_nh(nh)
+EyesXingFacesDetector::EyesXingFacesDetector(ros::NodeHandle &nh, double hz)
+    : m_nh(nh), m_hz(hz)
 {
+  bool autosize = false;
+
+  cv::namedWindow("debug", autosize ? CV_WINDOW_AUTOSIZE : 0);
+  //cv::setMouseCallback("debug", &ImageNodelet::mouseCb, this);
 }
 
 EyesXingFacesDetector::~EyesXingFacesDetector()
 {
+  cv::destroyWindow("debug");
 }
 
 
-//..............................................................................
+//. . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
 // Services
-//..............................................................................
+//. . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
 
 void EyesXingFacesDetector::advertiseServices()
 {
   string  strSvc;
 
-  strSvc = "load_classifier";
-  m_services[strSvc] = m_nh.advertiseService(strSvc,
-                                        &EyesXingFacesDetector::loadClassifier,
-                                        &(*this));
-
   strSvc = "clear_classifiers";
   m_services[strSvc] = m_nh.advertiseService(strSvc,
                                       &EyesXingFacesDetector::clearClassifiers,
                                       &(*this));
+
+  strSvc = "load_classifier";
+  m_services[strSvc] = m_nh.advertiseService(strSvc,
+                                        &EyesXingFacesDetector::loadClassifier,
+                                        &(*this));
 }
 
 bool EyesXingFacesDetector::clearClassifiers(ClearClassifiers::Request  &req,
                                              ClearClassifiers::Response &rsp)
 {
   ROS_DEBUG("clear_classifiers");
+
+  m_pipeline.clear();
 
   return true;
 }
@@ -120,255 +140,242 @@ bool EyesXingFacesDetector::loadClassifier(LoadClassifier::Request  &req,
 {
   ROS_DEBUG("load_classifier");
 
-  //ROS_INFO("Sweep from %lf to %lf and %lf to %lf.",
-  //       req.pan_min_pos, req.pan_max_pos, req.tilt_min_pos, req.tilt_max_pos);
+  DetectorPElem pelem(req.classifier.name, (SetOp)req.classifier.setop);
+
+  m_pipeline.push_back(pelem);
+
+  if( m_pipeline.back().load(req.classifier.filename) < 0 )
+  {
+    m_pipeline.pop_back();
+    ROS_ERROR("Failed to load classifier:\n\t%s",
+      req.classifier.filename.c_str());
+    rsp.rc = (int8_t)-EYE_ECODE_NO_EXEC;
+  }
+
+  else
+  {
+    m_pipeline.push_back(pelem);
+    ROS_INFO("Loaded classifier:\n\t%s\n\t%s\n\t%s\n",
+      req.classifier.name.c_str(),
+      req.classifier.filename.c_str(),
+      setopstr(req.classifier.setop));
+    rsp.rc = (int8_t)EYE_OK;
+  }
 
   return true;
 }
 
 
-//..............................................................................
+//. . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
 // Topic Publishers
-//..............................................................................
+//. . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
 
 void EyesXingFacesDetector::advertisePublishers(int nQueueDepth)
 {
   string  strPub;
 
-  strPub = "joint_states";
+  strPub = "ooi";
   m_publishers[strPub] =
-    m_nh.advertise<sensor_msgs::JointState>(strPub, nQueueDepth);
-
-  strPub = "joint_states_ex";
-  m_publishers[strPub] =
-    m_nh.advertise<pan_tilt_control::JointStateExtended>(strPub,nQueueDepth);
-
-  strPub = "robot_status";
-  m_publishers[strPub] =
-    m_nh.advertise<industrial_msgs::RobotStatus>(strPub, nQueueDepth);
-
-  strPub = "robot_status_ex";
-  m_publishers[strPub] =
-    m_nh.advertise<pan_tilt_control::RobotStatusExtended>(strPub,nQueueDepth);
+    m_nh.advertise<eyesxing_msgs::OOI>(strPub, nQueueDepth);
 }
 
 void EyesXingFacesDetector::publish()
 {
-  publishJointState();
-  publishRobotStatus();
+  publishOOI();
 }
 
-void EyesXingFacesDetector::publishJointState()
+void EyesXingFacesDetector::publishOOI()
 {
-  PanTiltJointStatePoint    state;
+  // update objects of interest message
+  updateOOIMsg(m_msgOOI);
 
-  // get robot's extended joint state.
-  m_robot.getJointState(state);
-  
-  // update joint state message
-  updateJointStateMsg(state, m_msgJointState);
-
-  // publish joint state messages
-  m_publishers["joint_states"].publish(m_msgJointState);
-
-  // update extended joint state message
-  updateExtendedJointStateMsg(state, m_msgJointStateEx);
-
-  // publish extened joint state messages
-  m_publishers["joint_states_ex"].publish(m_msgJointStateEx);
+  // publish objects of interest message
+  m_publishers["ooi"].publish(m_msgOOI);
 }
 
-void EyesXingFacesDetector::publishRobotStatus()
+void EyesXingFacesDetector::updateOOIMsg(eyesxing_msgs::OOI &msg)
 {
-  PanTiltRobotStatus  status;
+  m_mutexImg.lock();
 
-  // get robot's extended status.
-  m_robot.getRobotStatus(status);
-
-  // update robot status message
-  updateRobotStatusMsg(status, m_msgRobotStatus);
-
-  // publish robot status message
-  m_publishers["robot_status"].publish(m_msgRobotStatus);
-
-  // update extended robot status message
-  updateExtendedRobotStatusMsg(status, m_msgRobotStatusEx);
-
-  // publish extened robot status message
-  m_publishers["robot_status_ex"].publish(m_msgRobotStatusEx);
-}
-
-void EyesXingFacesDetector::updateJointStateMsg(PanTiltJointStatePoint &state,
-                                         sensor_msgs::JointState &msg)
-{
-  //
-  // Clear previous joint state data.
-  //
-  msg.name.clear();
-  msg.position.clear();
-  msg.velocity.clear();
-  msg.effort.clear();
-
-  //
-  // Set joint state header.
-  //
-  msg.header.stamp    = ros::Time::now();
-  msg.header.frame_id = "0";
-  msg.header.seq++;
-
-  //
-  // Set joint state state values;
-  //
-  for(int n=0; n<state.getNumPoints(); ++n)
+  if( m_imgLast.empty() )
   {
-    // joint state
-    msg.name.push_back(state[n].m_strName);
-    msg.position.push_back(state[n].m_fPosition);
-    msg.velocity.push_back(state[n].m_fVelocity);
-    msg.effort.push_back(state[n].m_fEffort);
+    m_mutexImg.unlock();
+    return;
   }
-}
-
-void EyesXingFacesDetector::updateExtendedJointStateMsg(PanTiltJointStatePoint &state,
-                                     pan_tilt_control::JointStateExtended &msg)
-{
-  pan_tilt_control::OpState opstate;
-
-  // 
-  // Clear previous extended joint state data.
-  //
-  msg.name.clear();
-  msg.position.clear();
-  msg.velocity.clear();
-  msg.effort.clear();
-  msg.master_servo_id.clear();
-  msg.slave_servo_id.clear();
-  msg.odometer_pos.clear();
-  msg.encoder_pos.clear();
-  msg.raw_speed.clear();
-  msg.op_state.clear();
 
   //
-  // Set extended joint state header.
+  // Clear previous objects of interest data
+  //
+  msg.id.clear();
+  msg.isa.clear();
+  msg.bbox.clear();
+  msg.confidence.clear();
+
+  //
+  // Set header.
   //
   msg.header.stamp    = ros::Time::now();
   msg.header.frame_id = "0";
   msg.header.seq++;
 
   //
-  // Set extended joint state values;
+  // Associate image with OoIs
   //
-  for(int n=0; n<state.getNumPoints(); ++n)
+  msg.img_hdr     = m_msgImg->header;
+  msg.img_width   = m_msgImg->width;
+  msg.img_height  = m_msgImg->height;
+
+  for(size_t i=0; i< m_oois.size(); ++i)
   {
-    msg.name.push_back(state[n].m_strName);
-    msg.position.push_back(state[n].m_fPosition);
-    msg.velocity.push_back(state[n].m_fVelocity);
-    msg.effort.push_back(state[n].m_fEffort);
-    msg.master_servo_id.push_back(state[n].m_nMasterServoId);
-    msg.slave_servo_id.push_back(state[n].m_nSlaveServoId);
-    msg.odometer_pos.push_back(state[n].m_nOdPos);
-    msg.encoder_pos.push_back(state[n].m_nEncPos);
-    msg.raw_speed.push_back(state[n].m_nSpeed);
+    eyesxing_msgs::Rect r;
+    cv::Rect            bbox = m_oois[i].bbox();
 
-    opstate.calib_state = state[n].m_eOpState;
-    msg.op_state.push_back(opstate);
+    r.x       = bbox.x;
+    r.y       = bbox.y;
+    r.width   = bbox.width;
+    r.height  = bbox.height;
+
+    msg.id.push_back(m_oois[i].id());
+    msg.isa.push_back(m_oois[i].isa());
+    msg.bbox.push_back(r);
+    msg.confidence.push_back(m_oois[i].confidence());
   }
+
+  m_mutexImg.unlock();
 }
 
-void EyesXingFacesDetector::updateRobotStatusMsg(PanTiltRobotStatus &status,
-                                          industrial_msgs::RobotStatus &msg)
-{
-  //
-  // Set robot status header.
-  //
-  msg.header.stamp    = ros::Time::now();
-  msg.header.frame_id = "0";
-  msg.header.seq++;
-
-  //
-  // Set industrial message compliant robot status values.
-  //
-  msg.mode.val            = status.m_eRobotMode;
-  msg.e_stopped.val       = status.m_eIsEStopped;
-  msg.drives_powered.val  = status.m_eAreDrivesPowered;
-  msg.motion_possible.val = status.m_eIsMotionPossible;
-  msg.in_motion.val       = status.m_eIsInMotion;
-  msg.in_error.val        = status.m_eIsInError;
-  msg.error_code          = status.m_nErrorCode;
-
-}
-
-void EyesXingFacesDetector::updateExtendedRobotStatusMsg(
-                                    PanTiltRobotStatus &status,
-                                    pan_tilt_control::RobotStatusExtended &msg)
-{
-  ServoHealth sh;
-  int         i;
-
-  //
-  // Set extended robot status header.
-  //
-  msg.header.stamp    = ros::Time::now();
-  msg.header.frame_id = "0";
-  msg.header.seq++;
-
-  //
-  // Set pan-tilt message extended robot status values.
-  //
-  msg.mode.val            = status.m_eRobotMode;
-  msg.e_stopped.val       = status.m_eIsEStopped;
-  msg.drives_powered.val  = status.m_eAreDrivesPowered;
-  msg.motion_possible.val = status.m_eIsMotionPossible;
-  msg.in_motion.val       = status.m_eIsInMotion;
-  msg.in_error.val        = status.m_eIsInError;
-  msg.error_code          = status.m_nErrorCode;
-  msg.is_calibrated.val   = status.m_eIsCalibrated;
-
-  // clear previous data
-  msg.servo_health.clear();
-
-  for(i=0; i<status.m_vecServoHealth.size(); ++i)
-  {
-    sh.servo_id = status.m_vecServoHealth[i].m_nServoId;
-    sh.temp     = status.m_vecServoHealth[i].m_fTemperature;
-    sh.voltage  = status.m_vecServoHealth[i].m_fVoltage;
-    sh.alarm    = status.m_vecServoHealth[i].m_uAlarms;
-
-    msg.servo_health.push_back(sh);
-  }
-}
-
-
-//..............................................................................
+//. . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
 // Subscribed Topics
-//..............................................................................
+//. . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
 
 void EyesXingFacesDetector::subscribeToTopics(int nQueueDepth)
 {
-  string  strSub;
+  string  strTopic("image");
+  string  strTransport("raw");
 
-  strSub = "joint_command";
-  m_subscriptions[strSub] = m_nh.subscribe(strSub, nQueueDepth,
-                                          &EyesXingFacesDetector::execJointCmd,
-                                          &(*this));
+  image_transport::ImageTransport it(m_nh);
+  image_transport::TransportHints hints(strTransport, ros::TransportHints(),
+                                        m_nh);
+  m_subImage = it.subscribe(strTopic, 1, &EyesXingFacesDetector::imageCb,
+                                          &(*this), hints);
 }
 
-void EyesXingFacesDetector::execJointCmd(const trajectory_msgs::JointTrajectory &jt)
+void EyesXingFacesDetector::imageCb(const sensor_msgs::ImageConstPtr& msg)
 {
-  ROS_DEBUG("Executing joint_command.");
+  ROS_DEBUG("Executing image callback.");
 
-  PanTiltJointTrajectoryPoint pt;
+  m_mutexImg.lock();
 
-  // load trajectory point
-  for(int j=0; j<jt.joint_names.size(); ++j)
+  // may want to view raw bayer data, which CvBridge doesn't know about
+  if( msg->encoding.find("bayer") != std::string::npos )
   {
-    pt.append(jt.joint_names[j],
-              jt.points[0].positions[j], 
-              jt.points[0].velocities[j]);
-    ROS_INFO("%s: pos=%5.3f speed=%2.1f", jt.joint_names[j].c_str(), 
-                                          jt.points[0].positions[j], 
-                                          jt.points[0].velocities[j]);
+    //ROS_INFO("bayer image");
+    m_imgLast = cv::Mat(msg->height, msg->width, CV_8UC1,
+                          const_cast<uint8_t*>(&msg->data[0]), msg->step);
   }
 
-  m_robot.move(pt);
+  // scale floating point images so that they display nicely
+  else if( msg->encoding.find("F") != std::string::npos )
+  {
+    //ROS_INFO("float image");
+    cv::Mat imgFloatBridge = cv_bridge::toCvShare(msg, msg->encoding)->image;
+    cv::Mat_<float> imgFloat = imgFloatBridge;
+    float max_val = 0;
+    for(int i = 0; i < imgFloat.rows; ++i)
+    {
+      for(int j = 0; j < imgFloat.cols; ++j)
+      {
+        max_val = std::max(max_val, imgFloat(i, j));
+      }
+    }
+
+    if(max_val > 0)
+    {
+      imgFloat /= max_val;
+    }
+    m_imgLast = imgFloat;
+  }
+
+  // convert to OpenCV native BGR color
+  else
+  {
+    //ROS_INFO("bgr image");
+    try
+    {
+      m_imgLast = cv_bridge::toCvShare(msg, "bgr8")->image;
+    }
+    catch (cv_bridge::Exception& e)
+    {
+      ROS_ERROR("Unable to convert '%s' image to bgr8: '%s'",
+                             msg->encoding.c_str(), e.what());
+    }
+  }
+
+  // m_imgLast may point to data owned by m_msgImg, so we hang onto it for
+  // the sake of mouseCb.
+  m_msgImg = msg;
+
+  if( m_imgLast.empty() )
+  {
+    m_oois.clear();
+    return;
+  }
+
+  vector<EyeOOI>  oois[3];
+  size_t          i;
+
+  //
+  // Detect Objects of Interest by iterating over detector pipeline, executing
+  // each detector's detect() function, and then performing the associated
+  // setop() set operation with the upstream OoI set.
+  //
+  for(i=0; i<m_pipeline.size(); ++i)
+  {
+    oois[(i+1)%3].clear();
+    m_pipeline[i].detect(m_imgLast, oois[(i+1)%3]);
+    m_pipeline[i].setop(oois[i%3], oois[(i+1)%3], oois[(i+2)%3]);
+  }
+
+  m_oois = oois[(1+2)%3];
+
+  ROS_INFO("%zu objects of interest detected.", m_oois.size());
+
+  // Must release the mutex before calling cv::imshow, or can deadlock against
+  // OpenCV's window mutex.
+  m_mutexImg.unlock();
+}
+
+void EyesXingFacesDetector::view(bool bDoWait)
+{
+  size_t  i;
+
+  if( !m_imgLast.empty() )
+  {
+    cv::Rect    bbox;
+    string      strId;
+    cv::Point   pt;
+
+    for(i=0; i<m_oois.size(); ++i)
+    {
+      strId = m_oois[i].id();
+      bbox  = m_oois[i].bbox();
+
+      rectangle(m_imgLast, bbox, CV_RGB(0, 255, 0), 1);
+
+      if( !strId.empty() )
+      {
+        pt.x = max(bbox.x - 10, 0);
+        pt.y = max(bbox.y - 10, 0);
+        putText(m_imgLast, strId, pt, cv::FONT_HERSHEY_PLAIN, 1.0,
+                  CV_RGB(0,255,0), 2.0);
+      }
+    }
+
+    cv::imshow("View Detected", m_imgLast);
+
+    if( bDoWait )
+    {
+      cv::waitKey(10);
+    }
+  }
 }
